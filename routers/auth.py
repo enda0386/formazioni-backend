@@ -1,10 +1,11 @@
 """
-Autenticazione JWT.
+Autenticazione JWT — usa PyJWT (compatibile Python 3.14+).
 
 Variabili d'ambiente da impostare su Render:
-  APP_USERNAME  — username di accesso (default: admin)
-  APP_PASSWORD  — password in chiaro (default: formazioni2024)
-  JWT_SECRET    — stringa segreta per firmare il token (OBBLIGATORIA in prod)
+  APP_USERNAME        — username di accesso        (default: admin)
+  APP_PASSWORD        — password in chiaro         (default: formazioni2024)
+  JWT_SECRET          — chiave per firmare il token (OBBLIGATORIA in prod)
+  TOKEN_EXPIRE_HOURS  — durata sessione in ore      (default: 8)
 
 Per generare un JWT_SECRET sicuro:
   python3 -c "import secrets; print(secrets.token_hex(32))"
@@ -12,11 +13,10 @@ Per generare un JWT_SECRET sicuro:
 import os
 from datetime import datetime, timedelta, timezone
 
+import jwt
 from fastapi import APIRouter, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from jose import jwt, JWTError
-from passlib.context import CryptContext
 
 router = APIRouter(prefix="/auth", tags=["Autenticazione"])
 
@@ -25,10 +25,9 @@ APP_USERNAME = os.getenv("APP_USERNAME", "admin")
 APP_PASSWORD = os.getenv("APP_PASSWORD", "formazioni2024")
 JWT_SECRET   = os.getenv("JWT_SECRET",   "CAMBIA-QUESTO-SEGRETO-IN-PRODUZIONE")
 ALGORITHM    = "HS256"
-TOKEN_EXPIRE = int(os.getenv("TOKEN_EXPIRE_HOURS", "8"))  # ore
+TOKEN_EXPIRE = int(os.getenv("TOKEN_EXPIRE_HOURS", "8"))
 
-pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
-bearer  = HTTPBearer(auto_error=False)
+bearer = HTTPBearer(auto_error=False)
 
 
 # ── Modelli ───────────────────────────────────────────────────────────────────
@@ -40,7 +39,7 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
-    expires_in: int       # secondi
+    expires_in: int
     username: str
 
 
@@ -57,10 +56,7 @@ def _make_token(username: str) -> str:
 def verify_token(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
 ) -> str:
-    """
-    Dipendenza FastAPI: verifica il Bearer token in ogni richiesta protetta.
-    Restituisce lo username se valido, altrimenti 401.
-    """
+    """Verifica il Bearer token. Restituisce username se valido, altrimenti 401."""
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -68,14 +64,24 @@ def verify_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
-        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[ALGORITHM])
+        payload = jwt.decode(
+            credentials.credentials,
+            JWT_SECRET,
+            algorithms=[ALGORITHM],
+        )
         username: str = payload.get("sub", "")
         if not username:
-            raise ValueError
-    except (JWTError, ValueError):
+            raise ValueError("sub vuoto")
+    except jwt.ExpiredSignatureError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token non valido o scaduto",
+            detail="Sessione scaduta, effettua nuovamente il login",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except (jwt.InvalidTokenError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token non valido",
             headers={"WWW-Authenticate": "Bearer"},
         )
     return username
@@ -84,19 +90,12 @@ def verify_token(
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 @router.post("/login", response_model=TokenResponse)
 def login(body: LoginRequest):
-    """
-    Verifica username e password contro le variabili d'ambiente.
-    Restituisce un token JWT valido per TOKEN_EXPIRE ore.
-    """
-    username_ok = body.username == APP_USERNAME
-    password_ok = body.password == APP_PASSWORD
-
-    if not (username_ok and password_ok):
+    """Verifica credenziali e restituisce token JWT."""
+    if body.username != APP_USERNAME or body.password != APP_PASSWORD:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Credenziali non corrette",
         )
-
     token = _make_token(body.username)
     return TokenResponse(
         access_token=token,
