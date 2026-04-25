@@ -1,11 +1,12 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import pathlib
 
 from database import init_db
-from routers import cantieri, dipendenti, attestati, visite, tipi_formazione, dashboard, cantieri_temp
+from routers import cantieri, dipendenti, attestati, visite, tipi_formazione, dashboard, cantieri_temp, auth
+from routers.auth import verify_token
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -26,13 +27,14 @@ app.add_middleware(
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-app.include_router(cantieri.router)
-app.include_router(dipendenti.router)
-app.include_router(attestati.router)
-app.include_router(visite.router)
-app.include_router(tipi_formazione.router)
-app.include_router(dashboard.router)
-app.include_router(cantieri_temp.router)
+app.include_router(auth.router)   # pubblico — nessuna protezione
+app.include_router(cantieri.router, dependencies=[Depends(verify_token)])
+app.include_router(dipendenti.router, dependencies=[Depends(verify_token)])
+app.include_router(attestati.router, dependencies=[Depends(verify_token)])
+app.include_router(visite.router, dependencies=[Depends(verify_token)])
+app.include_router(tipi_formazione.router, dependencies=[Depends(verify_token)])
+app.include_router(dashboard.router, dependencies=[Depends(verify_token)])
+app.include_router(cantieri_temp.router, dependencies=[Depends(verify_token)])
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 @app.on_event("startup")
